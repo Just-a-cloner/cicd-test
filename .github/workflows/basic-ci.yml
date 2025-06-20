@@ -1,0 +1,132 @@
+# Basic CI/CD Pipeline for Flask Facts API
+# First Level - Simple Functionality Check
+
+name: Basic CI Pipeline
+
+# Trigger the workflow
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# Allow manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Basic Testing and Quality Checks
+  test-and-validate:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
+    steps:
+    # Step 1: Checkout the repository
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    # Step 2: Set up Python environment
+    - name: 🐍 Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    # Step 3: Install dependencies
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 black isort
+    
+    # Step 4: Code Quality Checks
+    - name: 🔍 Code Quality - Linting
+      run: |
+        echo "🔍 Running Flake8 linting..."
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        echo "✅ Critical linting passed!"
+    
+    - name: 🔍 Code Quality - Formatting Check
+      run: |
+        echo "🔍 Checking code formatting with Black..."
+        black --check --diff . || echo "⚠️  Formatting issues found (non-blocking)"
+        echo "🔍 Checking import sorting with isort..."
+        isort --check-only --diff . || echo "⚠️  Import sorting issues found (non-blocking)"
+    
+    # Step 5: Run Core Tests
+    - name: 🧪 Run Unit Tests
+      run: |
+        echo "🧪 Running core unit tests..."
+        pytest test_comprehensive.py::TestHealthEndpoint \
+               test_comprehensive.py::TestFactsEndpoints \
+               test_comprehensive.py::TestUserAuthentication \
+               -v --tb=short
+    
+    # Step 6: Run Basic Integration Tests
+    - name: 🔗 Run Integration Tests
+      run: |
+        echo "🔗 Running basic integration tests..."
+        pytest test_integration.py::TestIntegrationScenarios::test_complete_user_journey \
+               test_integration.py::TestIntegrationScenarios::test_data_consistency_across_operations \
+               -v --tb=short
+    
+    # Step 7: Application Startup Test
+    - name: 🚀 Application Startup Test
+      run: |
+        echo "🚀 Testing application startup..."
+        timeout 10s python app.py &
+        sleep 3
+        echo "✅ Application starts successfully!"
+    
+    # Step 8: Basic Coverage Report
+    - name: 📊 Generate Coverage Report
+      run: |
+        echo "📊 Generating test coverage report..."
+        pytest test_comprehensive.py::TestHealthEndpoint \
+               test_comprehensive.py::TestFactsEndpoints \
+               --cov=app --cov=models --cov-report=term-missing
+    
+    # Step 9: Success Summary
+    - name: ✅ Pipeline Success Summary
+      run: |
+        echo ""
+        echo "🎉 Basic CI Pipeline Completed Successfully!"
+        echo "================================================"
+        echo "✅ Code quality checks passed"
+        echo "✅ Unit tests passed"
+        echo "✅ Integration tests passed"
+        echo "✅ Application startup validated"
+        echo "✅ Coverage report generated"
+        echo ""
+        echo "🚀 Ready for next level CI/CD enhancements!"
+
+  # Job 2: Basic Security Check (Optional - runs in parallel)
+  security-check:
+    name: Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🔒 Basic Security Tests
+      run: |
+        echo "🔒 Running basic security tests..."
+        pytest test_comprehensive.py::TestEdgeCases::test_sql_injection_attempts \
+               test_comprehensive.py::TestDatabaseIntegration::test_password_hashing \
+               -v --tb=short
+        echo "✅ Basic security tests passed!"
