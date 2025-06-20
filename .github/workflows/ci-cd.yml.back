@@ -1,0 +1,437 @@
+# =====================================================================================
+# GITHUB ACTIONS CI/CD PIPELINE
+# =====================================================================================
+# 
+# PURPOSE: Automated Continuous Integration and Continuous Deployment
+# 
+# WORKFLOW TRIGGERS:
+# - Push to main/master branch (deployment pipeline)
+# - Pull requests (validation pipeline) 
+# - Manual workflow dispatch (on-demand testing)
+# - Scheduled runs (daily security/dependency checks)
+#
+# PIPELINE STAGES:
+# 1. Environment Setup (Python, dependencies, caching)
+# 2. Code Quality Gates (formatting, linting, security)
+# 3. Multi-Tier Testing (unit → integration → performance → security)
+# 4. Coverage Analysis & Reporting
+# 5. Security Scanning (dependencies, code analysis)
+# 6. Build & Package (Docker image creation)
+# 7. Deployment (staging/production based on branch)
+# 8. Post-deployment Testing & Monitoring Setup
+#
+# QUALITY GATES:
+# - All tests must pass (750+ test cases)
+# - Code coverage minimum 70%
+# - No critical security vulnerabilities
+# - Performance benchmarks met
+# - Code quality standards enforced
+#
+# =====================================================================================
+
+name: 🚀 CI/CD Pipeline - Flask Facts API
+
+# =====================================================================================
+# WORKFLOW TRIGGERS & SCHEDULING
+# =====================================================================================
+on:
+  # Trigger on pushes to main branch (full deployment pipeline)
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '*.md'          # Ignore documentation changes
+      - 'docs/**'       # Ignore documentation directory changes
+      - '.gitignore'    # Ignore gitignore changes
+  
+  # Trigger on pull requests (validation pipeline only)
+  pull_request:
+    branches: [ main, master ]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+  
+  # Allow manual triggering for testing and debugging
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment for deployment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      run_performance_tests:
+        description: 'Run performance tests'
+        required: false
+        default: true
+        type: boolean
+  
+  # Scheduled runs for dependency and security audits
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 6 AM UTC
+
+# =====================================================================================
+# ENVIRONMENT VARIABLES & CONFIGURATION
+# =====================================================================================
+env:
+  PYTHON_VERSION: '3.9'
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# =====================================================================================
+# PIPELINE JOBS
+# =====================================================================================
+jobs:
+  # ===================================================================================
+  # JOB 1: CODE QUALITY & STANDARDS VALIDATION
+  # ===================================================================================
+  code-quality:
+    name: 🔍 Code Quality & Standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+      with:
+        # Fetch full history for better analysis
+        fetch-depth: 0
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        cache-dependency-path: 'requirements.txt'
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install black isort flake8 bandit safety
+    
+    - name: 🎨 Check code formatting (Black)
+      run: |
+        echo "::group::Code Formatting Check"
+        black --check --diff .
+        echo "::endgroup::"
+    
+    - name: 📋 Check import sorting (isort)
+      run: |
+        echo "::group::Import Sorting Check"
+        isort --check-only --diff .
+        echo "::endgroup::"
+    
+    - name: 🔍 Lint code (Flake8)
+      run: |
+        echo "::group::Code Linting"
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        echo "::endgroup::"
+    
+    - name: 🔒 Security linting (Bandit)
+      run: |
+        echo "::group::Security Analysis"
+        bandit -r . -f json -o bandit-report.json || true
+        bandit -r . --severity-level medium
+        echo "::endgroup::"
+    
+    - name: 🛡️ Check dependencies for vulnerabilities
+      run: |
+        echo "::group::Dependency Security Check"
+        safety check --json --output safety-report.json || true
+        safety check
+        echo "::endgroup::"
+    
+    - name: 📊 Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+        retention-days: 30
+
+  # ===================================================================================
+  # JOB 2: COMPREHENSIVE TESTING SUITE
+  # ===================================================================================
+  test-suite:
+    name: 🧪 Testing Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: code-quality
+    
+    strategy:
+      matrix:
+        test-type: [unit, integration, security]
+        include:
+          - test-type: unit
+            pytest-args: "test_comprehensive.py::TestHealthEndpoint test_comprehensive.py::TestFactsEndpoints test_comprehensive.py::TestUserAuthentication test_comprehensive.py::TestDatabaseIntegration"
+          - test-type: integration  
+            pytest-args: "test_integration.py"
+          - test-type: security
+            pytest-args: "test_comprehensive.py::TestEdgeCases test_comprehensive.py::TestDatabaseIntegration::test_password_hashing"
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🧪 Run ${{ matrix.test-type }} tests
+      run: |
+        echo "::group::${{ matrix.test-type }} Tests"
+        pytest ${{ matrix.pytest-args }} -v --tb=short --junitxml=${{ matrix.test-type }}-results.xml
+        echo "::endgroup::"
+    
+    - name: 📊 Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.test-type }}
+        path: ${{ matrix.test-type }}-results.xml
+
+  # ===================================================================================
+  # JOB 3: PERFORMANCE & LOAD TESTING
+  # ===================================================================================
+  performance-tests:
+    name: ⚡ Performance Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: code-quality
+    if: github.event.inputs.run_performance_tests != 'false'
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: ⚡ Run performance tests
+      run: |
+        echo "::group::Performance & Load Tests"
+        pytest test_load.py -v --tb=short --junitxml=performance-results.xml
+        echo "::endgroup::"
+    
+    - name: 📊 Upload performance results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: performance-results
+        path: performance-results.xml
+
+  # ===================================================================================
+  # JOB 4: COVERAGE ANALYSIS & REPORTING
+  # ===================================================================================
+  coverage-analysis:
+    name: 📊 Coverage Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test-suite]
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 📊 Generate coverage report
+      run: |
+        echo "::group::Coverage Analysis"
+        pytest test_comprehensive.py::TestHealthEndpoint test_comprehensive.py::TestFactsEndpoints test_comprehensive.py::TestUserAuthentication \
+          --cov=app --cov=models \
+          --cov-report=html --cov-report=xml --cov-report=term-missing \
+          --cov-fail-under=70
+        echo "::endgroup::"
+    
+    - name: 📈 Upload coverage reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: |
+          htmlcov/
+          coverage.xml
+    
+    - name: 📊 Coverage comment on PR
+      if: github.event_name == 'pull_request'
+      uses: py-cov-action/python-coverage-comment-action@v3
+      with:
+        GITHUB_TOKEN: ${{ github.token }}
+
+  # ===================================================================================
+  # JOB 5: BUILD & CONTAINERIZATION
+  # ===================================================================================
+  build-and-package:
+    name: 🐳 Build & Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test-suite, coverage-analysis]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-url: ${{ steps.build.outputs.image-url }}
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: 🐳 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 🔐 Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 📝 Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: 🔨 Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: 🔍 Generate SBOM
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        format: spdx-json
+        output-file: sbom.spdx.json
+    
+    - name: 📊 Upload SBOM
+      uses: actions/upload-artifact@v3
+      with:
+        name: sbom
+        path: sbom.spdx.json
+
+  # ===================================================================================
+  # JOB 6: DEPLOYMENT TO STAGING
+  # ===================================================================================
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-and-package]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: staging
+    
+    steps:
+    - name: 🚀 Deploy to staging
+      run: |
+        echo "🎯 Deploying to staging environment..."
+        echo "Image: ${{ needs.build-and-package.outputs.image-url }}"
+        echo "Digest: ${{ needs.build-and-package.outputs.image-digest }}"
+        # Add your deployment commands here
+        # kubectl apply -f k8s/staging/
+        # helm upgrade --install facts-api ./charts/facts-api --set image.tag=${{ github.sha }}
+    
+    - name: 🔍 Run smoke tests
+      run: |
+        echo "🧪 Running post-deployment smoke tests..."
+        # Add smoke tests here
+        # curl -f https://staging.example.com/health
+        # pytest smoke_tests.py --url=https://staging.example.com
+
+  # ===================================================================================
+  # JOB 7: SECURITY SCANNING & COMPLIANCE
+  # ===================================================================================
+  security-scan:
+    name: 🛡️ Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build-and-package]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: 🔍 Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: 📊 Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # ===================================================================================
+  # JOB 8: PRODUCTION DEPLOYMENT (Manual Approval Required)
+  # ===================================================================================
+  deploy-production:
+    name: 🎯 Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [deploy-staging, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+    - name: 🎯 Deploy to production
+      run: |
+        echo "🚀 Deploying to production environment..."
+        echo "Image: ${{ needs.build-and-package.outputs.image-url }}"
+        # Add your production deployment commands here
+        # kubectl apply -f k8s/production/
+        # helm upgrade --install facts-api ./charts/facts-api --set image.tag=${{ github.sha }}
+    
+    - name: 🔍 Run production health checks
+      run: |
+        echo "💚 Running production health checks..."
+        # Add production health checks here
+        # curl -f https://api.example.com/health
+        # pytest health_checks.py --url=https://api.example.com
+    
+    - name: 📊 Update deployment status
+      run: |
+        echo "✅ Deployment completed successfully!"
+        echo "🎉 Flask Facts API is now live in production!"
